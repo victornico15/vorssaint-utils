@@ -34,6 +34,7 @@ final class WindowLayoutService: ObservableObject {
     @Published private(set) var failedShortcutActions: Set<WindowLayoutAction> = []
     @Published private(set) var directionalShortcutRegistrationFailed = false
     @Published private(set) var isGestureRunning = false
+    @Published private(set) var customZonePreviewVisible = false
 
     private var frameHistory = WindowLayoutHistory()
     private var lastActions: [WindowLayoutWindowKey: WindowLayoutAction] = [:]
@@ -82,6 +83,7 @@ final class WindowLayoutService: ObservableObject {
                                                      qos: .userInitiated)
     private var edgeSnapPreviewPanel: NSPanel?
     private var edgeSnapPreviewGeneration = 0
+    private var customZoneOptionHeld = false
     private var customZonesOptionDown = false
     private var customZonePanels: [String: NSPanel] = [:]
     private var customZoneTargets: [WindowCustomZoneTarget] = []
@@ -127,6 +129,11 @@ final class WindowLayoutService: ObservableObject {
         let gestureEnabled = available
             && UserDefaults.standard.bool(forKey: DefaultsKey.windowGestureEnabled)
             && trusted
+        if !fancyZonesMode {
+            customZonePreviewVisible = false
+            if !customZoneOptionHeld { customZonesOptionDown = false }
+            refreshCustomZoneOverlays()
+        }
         let edgeSnapEnabled = (edgeSnapCanTrack || customZonesEnabled) && trusted
         // The pointer shortcut needs no Accessibility, so it counts on its own.
         let pointerEnabled = available
@@ -286,6 +293,22 @@ final class WindowLayoutService: ObservableObject {
             return finish(.failure(.failed))
         }
         let currentRect = appKitFrame(fromAX: target.frame)
+        if let direction = action.customZoneDirection {
+            guard fancyZonesMode else { return finish(.failure(.failed)) }
+            return applyCustomZoneDirectional(direction,
+                                              target: target,
+                                              currentRect: currentRect,
+                                              screen: screen)
+        }
+        if let zoneIndex = action.customZoneIndex {
+            return applyCustomZoneShortcut(zoneIndex, target: target, screen: screen)
+        }
+        if action == .focusZonePrevious || action == .focusZoneNext {
+            return focusAdjacentCustomZone(forward: action == .focusZoneNext,
+                                           target: target,
+                                           currentRect: currentRect,
+                                           screen: screen)
+        }
         if action == .previousDisplay || action == .nextDisplay {
             guard let destination = adjacentScreen(to: screen,
                                                    screens: screens,
@@ -817,8 +840,10 @@ final class WindowLayoutService: ObservableObject {
     private func registerHotkeys() {
         // Cleared shortcuts are simply absent: their key combo stays free for
         // other apps, which is the whole point of clearing them (issue #169).
-        let shortcuts = Dictionary(uniqueKeysWithValues: WindowLayoutAction.shortcutActions.compactMap { action in
-            action.savedShortcut.map { (action, $0) }
+        let shortcuts: [WindowLayoutAction: GlobalShortcut] = Dictionary(uniqueKeysWithValues:
+            WindowLayoutAction.shortcutActions.compactMap { action in
+            guard !action.isCustomZoneDirectional || fancyZonesMode else { return nil }
+            return action.savedShortcut.map { (action, $0) }
         })
         if !hotKeyRefs.isEmpty, shortcuts == registeredShortcuts { return }
         unregisterHotkeys()
@@ -826,7 +851,7 @@ final class WindowLayoutService: ObservableObject {
         ensureHotKeyEventHandler()
 
         var failures = Set<WindowLayoutAction>()
-        for action in WindowLayoutAction.shortcutActions {
+        for action in WindowLayoutAction.shortcutActions where !action.isCustomZoneDirectional || fancyZonesMode {
             guard let shortcut = shortcuts[action] else { continue }
             let id = EventHotKeyID(signature: 0x5655_574C, id: action.shortcutID) // 'VUWL'
             var ref: EventHotKeyRef?
@@ -877,7 +902,9 @@ final class WindowLayoutService: ObservableObject {
                       let action = WindowLayoutAction(shortcutID: id.id) else {
                     return OSStatus(eventNotHandledErr)
                 }
-                DispatchQueue.main.async { service.apply(action) }
+                DispatchQueue.main.async {
+                    service.apply(action)
+                }
                 return noErr
             }, specs.count, &specs, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
         }
@@ -1454,7 +1481,9 @@ final class WindowLayoutService: ObservableObject {
     }
 
     private func stopEdgeSnapTap() {
-        setCustomZoneOptionDown(false)
+        setCustomZoneOptionHeld(false)
+        customZonePreviewVisible = false
+        refreshCustomZoneOverlays()
         if let customZoneDisplayObserver {
             NotificationCenter.default.removeObserver(customZoneDisplayObserver)
             self.customZoneDisplayObserver = nil
@@ -1502,10 +1531,14 @@ final class WindowLayoutService: ObservableObject {
 
         if type == .flagsChanged {
             let held = event.flags.contains(.maskAlternate)
-            DispatchQueue.main.async { [weak self] in self?.setCustomZoneOptionDown(held) }
+            DispatchQueue.main.async { [weak self] in self?.setCustomZoneOptionHeld(held) }
             return Unmanaged.passUnretained(event)
         }
         if type == .leftMouseDown {
+            if event.flags.contains(.maskAlternate) {
+                customZoneOptionHeld = true
+                beginCustomZoneOptionPreview()
+            }
             edgeSnapSequenceSuppressed = WindowEdgeSnapSupport.isSystemTilingEnabled
                 && !(customZonesEnabled && event.flags.contains(.maskAlternate))
         } else if edgeSnapSequenceSuppressed {
@@ -1988,21 +2021,49 @@ final class WindowLayoutService: ObservableObject {
             && UserDefaults.standard.bool(forKey: DefaultsKey.windowCustomZonesEnabled)
     }
 
-    private func setCustomZoneOptionDown(_ held: Bool) {
-        let allowed = held && customZonesEnabled && AXIsProcessTrusted()
-        guard customZonesOptionDown != allowed else { return }
-        customZonesOptionDown = allowed
+    private var fancyZonesMode: Bool {
+        customZonesEnabled
+            && UserDefaults.standard.bool(forKey: DefaultsKey.windowCustomZonesFancyZonesMode)
+    }
+
+    private func setCustomZoneOptionHeld(_ held: Bool) {
+        customZoneOptionHeld = held
+        if !fancyZonesMode {
+            let allowed = held && customZonesEnabled && AXIsProcessTrusted()
+            guard customZonesOptionDown != allowed else { return }
+            customZonesOptionDown = allowed
+            setCustomZoneHighlight(nil)
+            refreshCustomZoneOverlays()
+            return
+        }
+        guard !held, customZonesOptionDown else { return }
+        customZonesOptionDown = false
         setCustomZoneHighlight(nil)
         refreshCustomZoneOverlays()
     }
 
-    /// A modifier by itself shows the targets. The panels accept no mouse
-    /// events, and no window is touched until a confirmed move is released.
+    private func beginCustomZoneOptionPreview() {
+        guard fancyZonesMode, customZoneOptionHeld && customZonesEnabled && AXIsProcessTrusted(),
+              !customZonesOptionDown else { return }
+        customZonesOptionDown = true
+        setCustomZoneHighlight(nil)
+        refreshCustomZoneOverlays()
+    }
+
+    func toggleCustomZonePreview() {
+        guard fancyZonesMode, customZonesEnabled, AXIsProcessTrusted(), edgeSnapTap != nil else { return }
+        customZonePreviewVisible.toggle()
+        refreshCustomZoneOverlays()
+    }
+
+    /// The panels accept no mouse events, and no window is touched until a
+    /// confirmed move is released.
     func refreshCustomZoneOverlays() {
         customZonePanels.values.forEach { $0.orderOut(nil) }
         customZonePanels.removeAll()
         customZoneTargets.removeAll()
-        guard customZonesOptionDown, customZonesEnabled, edgeSnapTap != nil else { return }
+        guard (customZonesOptionDown || customZonePreviewVisible),
+              customZonesEnabled, edgeSnapTap != nil else { return }
         let layouts = WindowCustomZoneLayouts(
             storageValue: UserDefaults.standard.string(forKey: DefaultsKey.windowCustomZoneLayouts))
         for screen in NSScreen.screens {
@@ -2079,6 +2140,188 @@ final class WindowLayoutService: ObservableObject {
             frameHistory.discardLatest(for: drag.key)
             _ = finish(.failure(.failed))
         }
+    }
+
+    /// Keyboard counterpart of an Option-drag into a zone: the focused window
+    /// takes zone N of its own display. An index the display does not have
+    /// fails without touching the window, so a three-zone screen simply
+    /// ignores Zone 4 rather than guessing.
+    private func applyCustomZoneShortcut(_ index: Int,
+                                         target: WindowLayoutTarget,
+                                         screen: NSScreen) -> WindowLayoutResult {
+        guard customZonesEnabled, AXIsProcessTrusted(), canSetFrame(on: target.window),
+              frame(of: target.window) != nil else { return finish(.failure(.failed)) }
+        let layouts = WindowCustomZoneLayouts(
+            storageValue: UserDefaults.standard.string(forKey: DefaultsKey.windowCustomZoneLayouts))
+        let displayID = WindowCustomZoneLayouts.id(for: screen)
+        let ratio = screen.visibleFrame.width / max(screen.visibleFrame.height, 1)
+        let zones = layouts.zones(for: displayID, aspectRatio: ratio)
+        guard index < zones.count else { return finish(.failure(.failed)) }
+        let rect = zones[index].frame(in: screen.visibleFrame)
+        frameHistory.record(target.frame, for: target.key)
+        if setFrame(axFrame(fromAppKit: rect),
+                    targetRect: rect,
+                    screenVisibleFrame: screen.visibleFrame,
+                    action: .maximize,
+                    on: target.window,
+                    windowKey: target.key) {
+            lastActions.removeValue(forKey: target.key)
+            return finish(.success(restored: false))
+        }
+        frameHistory.discardLatest(for: target.key)
+        return finish(.failure(.failed))
+    }
+
+    /// Moves the focused window to the nearest custom zone in the requested
+    /// direction. At an edge, no candidate means no movement and no wrap.
+    private func applyCustomZoneDirectional(_ direction: WindowCustomZoneDirection,
+                                            target: WindowLayoutTarget,
+                                            currentRect: NSRect,
+                                            screen: NSScreen) -> WindowLayoutResult {
+        guard customZonesEnabled, AXIsProcessTrusted(), canSetFrame(on: target.window),
+              frame(of: target.window) != nil else { return finish(.failure(.failed)) }
+        let layouts = WindowCustomZoneLayouts(
+            storageValue: UserDefaults.standard.string(forKey: DefaultsKey.windowCustomZoneLayouts))
+        let displayID = WindowCustomZoneLayouts.id(for: screen)
+        let ratio = screen.visibleFrame.width / max(screen.visibleFrame.height, 1)
+        let sourceZones = layouts.zones(for: displayID, aspectRatio: ratio)
+        let destination: NSScreen
+        let destinationZones: [WindowCustomZone]
+        let index: Int
+        if let sameScreenIndex = WindowCustomZoneLayouts.directionalZoneIndex(
+            from: currentRect,
+            zones: sourceZones,
+            visibleFrame: screen.visibleFrame,
+            direction: direction) {
+            destination = screen
+            destinationZones = sourceZones
+            index = sameScreenIndex
+        } else {
+            guard let neighbour = neighbourScreen(to: screen,
+                                                  screens: NSScreen.screens,
+                                                  direction: direction.displayDirection) else {
+                return finish(.failure(.failed))
+            }
+            let destinationID = WindowCustomZoneLayouts.id(for: neighbour)
+            let destinationRatio = neighbour.visibleFrame.width / max(neighbour.visibleFrame.height, 1)
+            let zones = layouts.zones(for: destinationID, aspectRatio: destinationRatio)
+            guard let crossScreenIndex = WindowCustomZoneLayouts.crossDisplayZoneIndex(
+                from: currentRect,
+                sourceZones: sourceZones,
+                sourceVisibleFrame: screen.visibleFrame,
+                destinationZones: zones,
+                destinationVisibleFrame: neighbour.visibleFrame,
+                direction: direction) else {
+                return finish(.failure(.failed))
+            }
+            destination = neighbour
+            destinationZones = zones
+            index = crossScreenIndex
+        }
+        let rect = destinationZones[index].frame(in: destination.visibleFrame)
+        frameHistory.record(target.frame, for: target.key)
+        let action = direction.action
+        if setFrame(axFrame(fromAppKit: rect),
+                    targetRect: rect,
+                    screenVisibleFrame: destination.visibleFrame,
+                    action: action,
+                    on: target.window,
+                    windowKey: target.key) {
+            lastActions.removeValue(forKey: target.key)
+            return finish(.success(restored: false))
+        }
+        frameHistory.discardLatest(for: target.key)
+        return finish(.failure(.failed))
+    }
+
+    /// Walks focus to the window occupying the next zone of the display, the
+    /// last zone going backward. Zones are visited in layout order, and the
+    /// topmost window of the destination zone wins, matching what a click
+    /// there would focus.
+    private func focusAdjacentCustomZone(forward: Bool,
+                                         target: WindowLayoutTarget,
+                                         currentRect: NSRect,
+                                         screen: NSScreen) -> WindowLayoutResult {
+        guard customZonesEnabled, AXIsProcessTrusted() else { return finish(.failure(.failed)) }
+        let layouts = WindowCustomZoneLayouts(
+            storageValue: UserDefaults.standard.string(forKey: DefaultsKey.windowCustomZoneLayouts))
+        let displayID = WindowCustomZoneLayouts.id(for: screen)
+        let ratio = screen.visibleFrame.width / max(screen.visibleFrame.height, 1)
+        let zones = layouts.zones(for: displayID, aspectRatio: ratio)
+        guard zones.count > 1,
+              let next = WindowCustomZoneLayouts.nextZoneIndex(
+                current: WindowCustomZoneLayouts.zoneIndex(containingCenterOf: currentRect,
+                                                           zones: zones,
+                                                           visibleFrame: screen.visibleFrame),
+                count: zones.count,
+                forward: forward)
+        else { return finish(.failure(.failed)) }
+        let zoneRect = zones[next].frame(in: screen.visibleFrame)
+        guard let candidate = topmostWindow(in: zoneRect, on: screen, excluding: target.windowID),
+              focusWindow(windowID: candidate.windowID, pid: candidate.pid)
+        else { return finish(.failure(.noWindow)) }
+        return finish(.success(restored: false))
+    }
+
+    private struct ZoneWindowCandidate {
+        let windowID: CGWindowID
+        let pid: pid_t
+    }
+
+    /// Topmost regular on-screen window whose center sits inside the zone.
+    /// CGWindowList is already front-to-back, so the first hit is the one a
+    /// click in that zone would land on.
+    private func topmostWindow(in zoneRect: NSRect, on screen: NSScreen,
+                               excluding focusedWindowID: CGWindowID) -> ZoneWindowCandidate? {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let screenFrame = screen.frame
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+                as? [[String: Any]] else { return nil }
+        for info in list {
+            guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  pid != ownPID,
+                  let windowID = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  windowID != focusedWindowID,
+                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  let x = (bounds["X"] as? NSNumber)?.doubleValue,
+                  let y = (bounds["Y"] as? NSNumber)?.doubleValue,
+                  let width = (bounds["Width"] as? NSNumber)?.doubleValue,
+                  let height = (bounds["Height"] as? NSNumber)?.doubleValue,
+                  width > 40, height > 40
+            else { continue }
+            let quartzRect = CGRect(x: x, y: y, width: width, height: height)
+            let appKitRect = NSRect(x: quartzRect.minX,
+                                    y: Double(screenFrame.maxY) - quartzRect.maxY,
+                                    width: quartzRect.width, height: quartzRect.height)
+            guard appKitRect.intersects(screen.visibleFrame) else { continue }
+            let center = CGPoint(x: appKitRect.midX, y: appKitRect.midY)
+            if zoneRect.contains(center) {
+                return ZoneWindowCandidate(windowID: windowID, pid: pid)
+            }
+        }
+        return nil
+    }
+
+    /// Raises and focuses one CGWindow through Accessibility: activate the
+    /// owning app, then mark the window main, raised and focused, the same
+    /// sequence the Switcher uses for its own activations.
+    private func focusWindow(windowID: CGWindowID, pid: pid_t) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated
+        else { return false }
+        app.activate(options: [])
+        let axApp = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(axApp, 0.35)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef)
+                == .success, let windows = windowsRef as? [AXUIElement] else { return false }
+        for window in windows where AXWindowResolver.windowID(for: window) == windowID {
+            AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            return true
+        }
+        return false
     }
 
     private func applyEdgeSnap(_ drag: WindowEdgeSnapDrag,
