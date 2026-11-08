@@ -309,7 +309,7 @@ extension AppFeature {
             return FeatureSettingsDestination(.mouse, sectionAnchor: .middleClick)
         case .mouseClickDebounce:
             return FeatureSettingsDestination(.mouse, sectionAnchor: .mouseClickDebounce)
-        case .keyboardDebounce: return FeatureSettingsDestination(.keyDebounce)
+        case .keyboardDebounce, .ctrlShortcuts: return FeatureSettingsDestination(.keyDebounce)
         case .textSnippets: return FeatureSettingsDestination(.textSnippets)
         case .superKey: return FeatureSettingsDestination(.superKey)
 
@@ -419,7 +419,7 @@ enum FeatureVisibilitySupport {
         case .uninstaller: return [.uninstaller]
         case .killProcess: return [.killProcess]
         case .portManager: return [.portManager]
-        case .keyDebounce: return [.keyboardDebounce]
+        case .keyDebounce: return [.keyboardDebounce, .ctrlShortcuts]
         case .superKey: return [.superKey]
         case .textSnippets: return [.textSnippets]
         case .screenshot: return [.screenshot, .screenRecorder, .screenOCR, .colorPicker]

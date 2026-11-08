@@ -306,6 +306,8 @@ enum DefaultsKey {
     static let keyboardDebounceEnabled = "keyboardDebounceEnabled"
     static let keyboardDebounceWindowMs = "keyboardDebounceWindowMs"
     static let keyboardDebounceKeyWindows = "keyboardDebounceKeyWindows" // comma-separated keyCode:ms
+    static let ctrlShortcutsEnabled = "ctrlShortcutsEnabled"
+    static let ctrlShortcutsExcludedApps = "ctrlShortcutsExcludedApps" // comma-separated bundle ids
     static let panelUtilityCleaning = "panelUtilityCleaning"
     static let cleaningModeKeepScreenVisible = "cleaningModeKeepScreenVisible"
     static let panelUtilityURLCleaner = "panelUtilityURLCleaner"
@@ -1557,6 +1559,8 @@ enum Defaults {
         DefaultsKey.keyboardDebounceEnabled: false,
         DefaultsKey.keyboardDebounceWindowMs: defaultKeyboardDebounceWindowMs,
         DefaultsKey.keyboardDebounceKeyWindows: "",
+        DefaultsKey.ctrlShortcutsEnabled: false,
+        DefaultsKey.ctrlShortcutsExcludedApps: CtrlShortcutsSupport.encodeExcluded(CtrlShortcutsSupport.defaultExcludedBundleIDs),
         DefaultsKey.panelUtilityCleaning: true,
         DefaultsKey.cleaningModeKeepScreenVisible: false,
         DefaultsKey.panelUtilityURLCleaner: true,

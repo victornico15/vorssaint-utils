@@ -16,6 +16,9 @@ struct KeyboardDebounceSettings: View {
     @AppStorage(DefaultsKey.keyboardDebounceEnabled) private var enabled = false
     @AppStorage(DefaultsKey.keyboardDebounceWindowMs) private var globalWindow = Defaults.defaultKeyboardDebounceWindowMs
     @AppStorage(DefaultsKey.keyboardDebounceKeyWindows) private var keyWindowsRaw = ""
+    @ObservedObject private var ctrlShortcuts = CtrlShortcutsService.shared
+    @AppStorage(DefaultsKey.ctrlShortcutsEnabled) private var ctrlEnabled = false
+    @AppStorage(DefaultsKey.ctrlShortcutsExcludedApps) private var ctrlExcluded = ""
     @State private var selectedKeyCode: Int64?
     @State private var selectedWindow = Defaults.defaultKeyboardDebounceWindowMs
 
@@ -107,7 +110,37 @@ struct KeyboardDebounceSettings: View {
             }
             .disabled(!enabled)
 
-            if enabled, !permissions.accessibility {
+            if AppFeature.ctrlShortcuts.isAvailable {
+                let ctrlText = FeatureStrings.ctrlShortcuts(l10n.language)
+                Section(ctrlText.title) {
+                    Toggle(ctrlText.title, isOn: $ctrlEnabled)
+                        .onChange(of: ctrlEnabled) { _, value in
+                            CtrlShortcutsService.shared.syncWithPreferences()
+                            guard value, !permissions.accessibility else { return }
+                            permissions.requestAccessibility()
+                            permissions.openAccessibilitySettings()
+                        }
+                    Text(ctrlText.caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if ctrlEnabled, ctrlShortcuts.isRunning {
+                        Label(ctrlText.activeNow, systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                    TextField(ctrlText.excludedApps, text: $ctrlExcluded, axis: .vertical)
+                        .lineLimit(1...4)
+                        .disabled(!ctrlEnabled)
+                        .onChange(of: ctrlExcluded) { _, _ in
+                            CtrlShortcutsService.shared.syncWithPreferences()
+                        }
+                    Text(ctrlText.excludedCaption)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if (enabled || ctrlEnabled), !permissions.accessibility {
                 Section(l10n.s.permissionRequired) {
                     PermissionRow(kind: .accessibility)
                 }

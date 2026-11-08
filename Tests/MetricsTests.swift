@@ -33,6 +33,7 @@ struct MetricsTests {
                 MouseSpacesGestureTapTests.run(suite)
                 SmoothScrollRoutingTests.run(suite)
                 KeyboardDebounceTapTests.run(suite)
+                CtrlShortcutsTests.run(suite)
                 PointerDisplayLookupContract.run(suite)
                 SuperKeyTapContract.run(suite)
                 PointerScreenContract.run(suite)
