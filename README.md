@@ -118,7 +118,7 @@ Reorder or hide panel sections, choose a compact layout, and export settings to 
 - **Apps to leave alone.** Exclude chosen apps from mouse enhancements.
 - **Extra click filter.** Ignore accidental rapid clicks from worn mouse buttons without delaying normal clicks.
 - **Key debounce.** Filter repeated letters caused by a worn keyboard.
-- **Ctrl shortcuts like Windows.** Use Ctrl+A, C, V, X and Z as select all, copy, paste, cut and undo. Command shortcuts keep working, and terminals start excluded so Ctrl+C still interrupts. Requires Accessibility; set up under Settings → Keyboard.
+- **Ctrl shortcuts like Windows.** Use Ctrl+A, C, V, X, Z and S as select all, copy, paste, cut, undo and save, on the built-in or any external keyboard. Command shortcuts keep working, and terminals start excluded so Ctrl+C still interrupts. Requires Accessibility and Input Monitoring; set up under Settings → Keyboard. Remove any App Shortcuts that already bind these menu items to Control, or the two will conflict.
 - **Super key.** Use Caps Lock or a right-side modifier as a shortcut combination, with a separate tap action and app exclusions.
 - **Keyboard shortcuts.** Manage feature shortcuts in one place, including optional takeover of supported macOS shortcuts while a feature is active.
 

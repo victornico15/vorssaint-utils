@@ -5,7 +5,7 @@ import CoreGraphics
 import Foundation
 
 /// Decides when a Control shortcut should reach the app as the matching
-/// Command shortcut (Ctrl+A/C/V/X/Z becomes ⌘A/⌘C/⌘V/⌘X/⌘Z). Pure logic with no
+/// Command shortcut (Ctrl+A/C/V/X/Z/S becomes ⌘A/⌘C/⌘V/⌘X/⌘Z/⌘S). Pure logic with no
 /// event tap, so it can be tested on its own.
 ///
 /// Only the flags of the original event are rewritten; nothing is posted, so
@@ -17,7 +17,8 @@ enum CtrlShortcutsSupport {
     static let pasteKey: Int64 = 9
     static let cutKey: Int64 = 7
     static let undoKey: Int64 = 6
-    static let remappedKeys: Set<Int64> = [selectAllKey, copyKey, pasteKey, cutKey, undoKey]
+    static let saveKey: Int64 = 1
+    static let remappedKeys: Set<Int64> = [selectAllKey, copyKey, pasteKey, cutKey, undoKey, saveKey]
 
     /// Terminals use Ctrl+C/Z/A for signals and line editing, so they start
     /// excluded. The user can edit the list.
@@ -58,7 +59,42 @@ enum CtrlShortcutsSupport {
         if let frontmostBundleID, excludedBundleIDs.contains(frontmostBundleID) { return nil }
         var result = flags
         result.remove(.maskControl)
+        result.remove(CGEventFlags(rawValue: leftControlDeviceBit | rightControlDeviceBit))
         result.insert(.maskCommand)
+        result.insert(CGEventFlags(rawValue: leftCommandDeviceBit))
         return result
+    }
+
+    // Device-dependent modifier bits (IOKit NX_DEVICE*KEYMASK). They say which
+    // side was pressed; a Command shortcut must not keep a Control side bit.
+    static let leftControlDeviceBit: UInt64 = 0x0000_0001
+    static let rightControlDeviceBit: UInt64 = 0x0000_2000
+    static let leftCommandDeviceBit: UInt64 = 0x0000_0008
+
+    static let leftControlKeyCode: CGKeyCode = 59
+    static let rightControlKeyCode: CGKeyCode = 62
+    static let leftCommandKeyCode: CGKeyCode = 55
+
+    /// The Control key that is physically held, so the replay releases and
+    /// restores the same one (external keyboards like Keychron have both).
+    static func heldControlKeyCode(_ flags: CGEventFlags) -> CGKeyCode {
+        let raw = flags.rawValue
+        if raw & rightControlDeviceBit != 0 && raw & leftControlDeviceBit == 0 {
+            return rightControlKeyCode
+        }
+        return leftControlKeyCode
+    }
+
+    /// Flags for the Control key-down that is restored after the replay.
+    static func controlRestoreFlags(base: CGEventFlags, controlKey: CGKeyCode) -> CGEventFlags {
+        let side = controlKey == rightControlKeyCode ? rightControlDeviceBit : leftControlDeviceBit
+        return base.union(.maskControl).union(CGEventFlags(rawValue: side))
+    }
+
+    /// Flags with every Control and Command bit removed (side bits included).
+    static func withoutControlOrCommand(_ flags: CGEventFlags) -> CGEventFlags {
+        flags.subtracting([.maskControl, .maskCommand])
+            .subtracting(CGEventFlags(rawValue: leftControlDeviceBit | rightControlDeviceBit
+                                      | leftCommandDeviceBit | 0x0000_0010))
     }
 }
