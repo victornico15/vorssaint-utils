@@ -514,6 +514,7 @@ if (( TEST )); then
         Sources/Vorssaint/Services/QuickTools/WindowActivationPolicy.swift
         Sources/Vorssaint/Services/KeyboardDebounce/KeyboardDebounceSupport.swift
         Sources/Vorssaint/Services/CtrlShortcuts/CtrlShortcutsSupport.swift
+        Sources/Vorssaint/Services/CtrlShortcuts/CtrlShortcutsReplay.swift
         Sources/Vorssaint/Core/CtrlShortcutsStrings.swift
         Sources/Vorssaint/Services/SuperKey/SuperKeySupport.swift
         Sources/Vorssaint/Services/SuperKey/SuperKeyMappingGuard.swift

@@ -19,6 +19,7 @@ struct KeyboardDebounceSettings: View {
     @ObservedObject private var ctrlShortcuts = CtrlShortcutsService.shared
     @AppStorage(DefaultsKey.ctrlShortcutsEnabled) private var ctrlEnabled = false
     @AppStorage(DefaultsKey.ctrlShortcutsExcludedApps) private var ctrlExcluded = ""
+    @AppStorage(DefaultsKey.ctrlShortcutsCommandAsControl) private var ctrlCommandAsControl = CtrlShortcutsSupport.defaultCommandAsControl
     @State private var selectedKeyCode: Int64?
     @State private var selectedWindow = Defaults.defaultKeyboardDebounceWindowMs
 
@@ -137,6 +138,21 @@ struct KeyboardDebounceSettings: View {
                     Text(ctrlText.excludedCaption)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
+                    TextField(ctrlText.commandAsControl, text: $ctrlCommandAsControl, axis: .vertical)
+                        .lineLimit(1...4)
+                        .disabled(!ctrlEnabled)
+                        .onChange(of: ctrlCommandAsControl) { _, _ in
+                            CtrlShortcutsService.shared.syncWithPreferences()
+                        }
+                    Text(ctrlText.commandAsControlCaption)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    let ignored = CtrlShortcutsSupport.invalidKeyMapEntries(ctrlCommandAsControl)
+                    if !ignored.isEmpty {
+                        Text("\(ctrlText.commandAsControlIgnored) \(ignored.joined(separator: ", "))")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
 

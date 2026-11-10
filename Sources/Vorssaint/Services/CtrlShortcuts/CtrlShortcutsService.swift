@@ -8,9 +8,11 @@ import CoreGraphics
 import Foundation
 
 /// Turns Ctrl+A / C / V / X / Z / S into the Command versions system-wide, except
-/// in excluded apps. Uses one CGEventTap that edits the flags of the event in
-/// place. Needs Accessibility and Input Monitoring: without Input Monitoring
-/// macOS refuses a keyboard tap.
+/// in excluded apps, and in the apps the user lists sends Command+key as Control+key
+/// (so Alt+C, the Command key on a PC-style keyboard, can interrupt a terminal).
+/// Uses one CGEventTap and `CtrlReplayEngine` to replay the shortcut as a real modifier
+/// change. Needs Accessibility and Input Monitoring: without Input Monitoring macOS
+/// refuses a keyboard tap.
 final class CtrlShortcutsService: ObservableObject {
     static let shared = CtrlShortcutsService()
 
@@ -20,10 +22,9 @@ final class CtrlShortcutsService: ObservableObject {
     private var enabled = false
     private var excluded = Set<String>()
     private var frontmostBundleID: String?
-    /// Keys whose Command replay is in progress (pressed, not yet released).
-    private var active = Set<Int64>()
-    /// The Control key (left or right) the current replay released.
-    private var heldControlKey = CtrlShortcutsSupport.leftControlKeyCode
+    /// Apps where Command+key is sent as Control+key (a terminal that needs Ctrl+C to interrupt).
+    private var commandAsControl: [String: Set<Int64>] = [:]
+    private var engine = CtrlReplayEngine()
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var workspaceObserver: NSObjectProtocol?
@@ -41,9 +42,13 @@ final class CtrlShortcutsService: ObservableObject {
         let excludedIDs = CtrlShortcutsSupport.decodeExcluded(
             defaults.string(forKey: DefaultsKey.ctrlShortcutsExcludedApps) ?? ""
         )
+        let swapMap = CtrlShortcutsSupport.decodeKeyMap(
+            defaults.string(forKey: DefaultsKey.ctrlShortcutsCommandAsControl) ?? CtrlShortcutsSupport.defaultCommandAsControl
+        )
         eventLock.withLock {
             enabled = wanted
             excluded = excludedIDs
+            commandAsControl = swapMap
         }
         if SessionActivitySupport.tapShouldRun(featureWanted: wanted,
                                                accessibilityGranted: AXIsProcessTrusted(),
@@ -130,7 +135,7 @@ final class CtrlShortcutsService: ObservableObject {
         }
         tap = nil
         runLoopSource = nil
-        eventLock.withLock { active.removeAll() }
+        eventLock.withLock { engine.reset() }
         isRunning = false
     }
 
@@ -165,59 +170,22 @@ final class CtrlShortcutsService: ObservableObject {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-        let plan = eventLock.withLock { () -> (CGEventFlags?, Bool) in
-            guard enabled else { return (nil, false) }
-            let rewritten = CtrlShortcutsSupport.rewrittenFlags(keyCode: keyCode,
-                                                                flags: flags,
-                                                                frontmostBundleID: frontmostBundleID,
-                                                                excludedBundleIDs: excluded)
-            return (rewritten, active.contains(keyCode))
+        let result = eventLock.withLock { () -> CtrlReplayEngine.Result in
+            guard enabled else { return CtrlReplayEngine.Result(consumed: false, actions: []) }
+            return engine.handle(isKeyDown: type == .keyDown, keyCode: keyCode, flags: flags, isRepeat: isRepeat,
+                                 frontmostBundleID: frontmostBundleID, excludedBundleIDs: excluded,
+                                 commandAsControl: commandAsControl)
         }
-        let (rewritten, wasActive) = plan
-
-        if type == .keyDown, let rewritten {
-            // Many apps (Safari, Chromium and Electron) look at the modifier
-            // state itself, not just the flags of the letter event. So the
-            // whole sequence is replayed as a real Command press.
-            if !wasActive || !isRepeat {
-                let alreadyCommand = eventLock.withLock { () -> Bool in
-                    let busy = !active.isEmpty
-                    active.insert(keyCode)
-                    return busy
-                }
-                if !alreadyCommand {
-                    let controlKey = CtrlShortcutsSupport.heldControlKeyCode(flags)
-                    eventLock.withLock { heldControlKey = controlKey }
-                    let base = CtrlShortcutsSupport.withoutControlOrCommand(flags)
-                    postModifier(keyCode: controlKey, flags: base)
-                    postModifier(keyCode: CtrlShortcutsSupport.leftCommandKeyCode, flags: rewritten)
-                }
+        for action in result.actions {
+            switch action {
+            case .modifier(let code, let raw):
+                postModifier(keyCode: code, flags: CGEventFlags(rawValue: raw))
+            case .key(let code, let down, let raw, let repeating):
+                postKey(code, down: down, flags: CGEventFlags(rawValue: raw), repeatFlag: repeating)
             }
-            postKey(keyCode, down: true, flags: rewritten, repeatFlag: isRepeat)
-            return nil
         }
-        if type == .keyUp, wasActive {
-            let ctrlStillDown = flags.contains(.maskControl)
-            let base = CtrlShortcutsSupport.withoutControlOrCommand(flags)
-            let (lastOne, controlKey) = eventLock.withLock { () -> (Bool, CGKeyCode) in
-                active.remove(keyCode)
-                return (active.isEmpty, heldControlKey)
-            }
-            let commandFlags = base.union(.maskCommand)
-                .union(CGEventFlags(rawValue: CtrlShortcutsSupport.leftCommandDeviceBit))
-            postKey(keyCode, down: false, flags: commandFlags, repeatFlag: false)
-            if lastOne {
-                postModifier(keyCode: CtrlShortcutsSupport.leftCommandKeyCode, flags: base)
-                if ctrlStillDown {
-                    postModifier(keyCode: controlKey,
-                                 flags: CtrlShortcutsSupport.controlRestoreFlags(base: base, controlKey: controlKey))
-                }
-            }
-            return nil
-        }
-        return Unmanaged.passUnretained(event)
+        return result.consumed ? nil : Unmanaged.passUnretained(event)
     }
-
 
     private func postKey(_ keyCode: Int64, down: Bool, flags: CGEventFlags, repeatFlag: Bool) {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: down) else { return }
